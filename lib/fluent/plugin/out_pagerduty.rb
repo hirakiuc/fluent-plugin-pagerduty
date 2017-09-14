@@ -1,42 +1,58 @@
-class Fluent::PagerdutyOutput < Fluent::Output
-  Fluent::Plugin.register_output('pagerduty', self)
+require 'fluent/plugin/output'
 
-  def initialize
-    require 'pagerduty'
-    super
-  end
+module Fluent::Plugin
+  class PagerdutyOutput < Output
+    Fluent::Plugin.register_output('pagerduty', self)
 
-  config_param :service_key, :string, :default => nil
-  config_param :event_type, :string, :default => 'trigger'
-  config_param :description, :string, :default => nil
+    config_param :service_key, :string, default: nil
+    config_param :event_type,  :string, default: 'trigger'
+    config_param :description, :string, default: nil
 
-  def configure(conf)
-    super
-
-    if @service_key.nil?
-      $log.warn "pagerduty: service_key required."
-    end
-  end
-
-  def emit(tag, es, chain)
-    es.each do |time,record|
-      call_pagerduty(record)
+    def initialize
+      require_relative './pagerduty_client.rb'
+      super
     end
 
-    chain.next
-  end
+    def configure(conf)
+      super
 
-  def call_pagerduty(record)
-    begin
-      service_key = record['service_key'] || @service_key
-      event_type = record['event_type'] || @event_type
-      description = record['description'] || record['message'] || @description
-      details = record['details'] || record
-      options = {"details" => details}
-      api = Pagerduty.new(service_key)
-      incident = api.trigger description, options
-    rescue => e
-      $log.error "pagerduty: request failed. ", :error_class=>e.class, :error=>e.message
+      if @service_key.nil?
+        log.warn 'pagerduty: service_key required.'
+      end
+    end
+
+    # method for non-buffered output mode
+    def process(tag, es)
+      es.each do |time, record|
+        begin
+          client.trigger(record)
+        rescue => e
+          # Do not throw error in non-buffered output mode.
+        end
+      end
+    end
+
+    # method for sync buffered output mode
+    def write(chunk)
+      log.debug 'process event to send pagerduty', chunk_id: dump_unique_id_hex(chunk.unique_id)
+
+      chunk.each do |time, record|
+        client.trigger(record)
+      end
+    end
+
+    private
+
+    def client
+      return @client if @client
+
+      defaults = {
+        service_key: @service_key,
+        event_type: @event_type
+      }
+      defaults[:description] = @description if @description
+
+      @client = PagerdutyClient.new(defaults, log)
     end
   end
 end
